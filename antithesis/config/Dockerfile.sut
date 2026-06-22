@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+WORKDIR sunfish
+
+COPY tools tools
+COPY build build
+COPY docs docs
+COPY nnue nnue
+COPY requirements.txt requirements.txt
+COPY sunfish.py sunfish.py
+COPY sunfish_nnue.py sunfish_nnue.py
+COPY antithesis/workload/main.py main.py
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+CMD ["python3", "-u", "main.py"]

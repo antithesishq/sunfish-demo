@@ -1,0 +1,5 @@
+services:
+  sunfish:
+    container_name: sunfish
+    image: ${REPOSITORY}sunfish:latest
+    stdin_open: true
