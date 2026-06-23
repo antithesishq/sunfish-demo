@@ -278,7 +278,7 @@ def run(sunfish_module, startpos):
 WHITE, BLACK = range(2)
 
 
-def from_fen(board, color, castling, enpas, _hclock, _fclock):
+def from_fen(board, color, castling, enpas, hclock, _fclock):
     board = re.sub(r"\d", (lambda m: "." * int(m.group(0))), board)
     board = list(21 * " " + "  ".join(board.split("/")) + 21 * " ")
     board[9::10] = ["\n"] * 12
@@ -293,7 +293,7 @@ def from_fen(board, color, castling, enpas, _hclock, _fclock):
     else:
         score = sum(sunfish.pst[c][i] for i, c in enumerate(board) if c.isupper())
         score -= sum(sunfish.pst[c.upper()][119-i] for i, c in enumerate(board) if c.islower())
-        pos = sunfish.Position(board, score, wc, bc, ep, 0)
+        pos = sunfish.Position(board, score, wc, bc, ep, 0, int(hclock))
     return pos if color == 'w' else pos.rotate()
 
 

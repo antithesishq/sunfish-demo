@@ -140,7 +140,7 @@ opt_ranges = dict(
 Move = namedtuple("Move", "i j prom")
 
 
-class Position(namedtuple("Position", "board score wc bc ep kp")):
+class Position(namedtuple("Position", "board score wc bc ep kp mc")):
     """A state of a chess game
     board -- a 120 char representation of the board
     score -- the board evaluation
@@ -148,7 +148,19 @@ class Position(namedtuple("Position", "board score wc bc ep kp")):
     bc -- the opponent castling rights, [west/king side, east/queen side]
     ep - the en passant square
     kp - the king passant square
+    mc - the half-move clock for the fifty-move rule: plies since the last
+         pawn move or capture
     """
+
+    # mc is bookkeeping for the fifty-move rule and must not affect identity.
+    # Two positions with the same board/score/castling/en-passant/king-passant
+    # are the same for transposition-table and repetition purposes regardless
+    # of the clock, so equality and hashing use only the original six fields.
+    def __eq__(self, other):
+        return self[:6] == other[:6]
+
+    def __hash__(self):
+        return hash(self[:6])
 
     def gen_moves(self):
         # For each of our pieces, iterate through each possible 'ray' of moves,
@@ -196,6 +208,7 @@ class Position(namedtuple("Position", "board score wc bc ep kp")):
             self.board[::-1].swapcase(), -self.score, self.bc, self.wc,
             119 - self.ep if self.ep and not nullmove else 0,
             119 - self.kp if self.kp and not nullmove else 0,
+            self.mc,
         )
 
     def move(self, move):
@@ -229,8 +242,12 @@ class Position(namedtuple("Position", "board score wc bc ep kp")):
                 ep = i + N
             if j == self.ep:
                 board = put(board, j + S, ".")
+        # Fifty-move clock: reset on a pawn move or a capture, else increment.
+        # (En passant and promotion are pawn moves, so they reset; castling is
+        # neither, so it increments.)
+        mc = 0 if (p == "P" or q.islower()) else self.mc + 1
         # We rotate the returned position, so it's ready for the next player
-        return Position(board, score, wc, bc, ep, kp).rotate()
+        return Position(board, score, wc, bc, ep, kp, mc).rotate()
 
     def value(self, move):
         i, j, prom = move
@@ -289,6 +306,13 @@ class Searcher:
         # or able to capture the opponent king.
         if pos.score <= -MATE_LOWER:
             return -MATE_UPPER
+
+        # Fifty-move rule: 100 plies (50 full moves) without a capture or pawn
+        # move is a draw. We return the draw score before generating any moves,
+        # so no move is stored for this position; at the root that makes the
+        # engine report "bestmove (none)".
+        if pos.mc >= 100:
+            return 0
 
         # Look in the table if we have already searched this position before.
         # We also need to be sure, that the stored search was over the same
@@ -445,7 +469,7 @@ def render(i):
     rank, fil = divmod(i - A1, 10)
     return chr(fil + ord("a")) + str(-rank + 1)
 
-hist = [Position(initial, 0, (True, True), (True, True), 0, 0)]
+hist = [Position(initial, 0, (True, True), (True, True), 0, 0, 0)]
 
 #input = raw_input
 
