@@ -4,13 +4,17 @@ Property (see ../scratchbook/properties/fifty-move-draw.md):
     If 50 consecutive moves (100 plies) occur without a capture taking place
     or a pawn being moved, the game ends in a draw.
 
-The workload drives Sunfish (over UCI, as a subprocess) from a sparse,
-captureless endgame and lets the engine play both sides. It tracks the halfmove
-clock with `python-chess` as the rules oracle. Once the oracle reports a
-fifty-move position (100 plies with no capture or pawn move), it checks whether
-the engine treats that position as a draw and fires the `Sometimes` assertion.
-Because Sunfish has no such logic, the assertion's condition never becomes true,
-exposing the missing rule.
+This workload plays full, randomized games from the standard
+starting position:
+
+  - python-chess is the rules oracle: it enumerates legal moves, tracks the
+    halfmove clock, and decides when the game is over.
+  - Each ply, a random legal move is chosen. The random
+    choice goes through the Antithesis SDK so it becomes a decision point the
+    platform can explore.
+  - Play continues until the game ends by the rules, or until the oracle reports
+    a fifty-move position. At that point the `Always` assertion checks whether
+    the engine treats the position as a draw.
 """
 
 import os
@@ -19,27 +23,23 @@ import sys
 
 import chess
 
-from antithesis.assertions import always, reachable, sometimes
+from antithesis.assertions import always 
 from antithesis.lifecycle import setup_complete
+from antithesis.random import random_choice
 
 # -----------------------------------------------------------------------------
 
 REPO_ROOT = os.path.abspath("/sunfish")
 
-# A sparse endgame: two white knights and both kings, no pawns, no castling.
-# Knights and kings can shuffle indefinitely without any capture or pawn move,
-# so the halfmove clock climbs straight to the fifty-move threshold. python-chess
-# does not flag king + two knights vs king as insufficient material, so
-# is_fifty_moves() is the operative termination signal.
-START_FEN = "4k3/8/8/8/8/8/8/N3K2N w - - 0 1"
+# Standard chess starting position.
+START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 # Engine search depth per move. Small and bounded so the game runs quickly and
 # deterministically; the property does not depend on engine strength.
 GO_DEPTH = 3
 
-# Play well past the 100-ply (fifty full-move) threshold to give the engine
-# repeated opportunities to declare the draw.
-MAX_PLIES = 140
+# How much to favor moves that advance the half-move clock.
+CLOCK_ADVANCE_WEIGHT = 1
 
 # When enabled, print the current board FEN at the top of each move loop
 # iteration. Handy for watching the game / the halfmove clock climb; off by
@@ -122,79 +122,77 @@ class Engine:
             self.proc.kill()
 
 
+def advances_halfmove_clock(board, move):
+    # The fifty-move clock advances on any move that is neither a capture
+    # (en passant counts) nor a pawn move. Castling advances it; promotion
+    # is a pawn move, so it resets.
+    if board.is_capture(move):
+        return False
+    if board.piece_type_at(move.from_square) == chess.PAWN:
+        return False
+    return True
+
+
 def main():
     engine = Engine()
     engine.handshake()
+    print("[workload]: sunfish is ready")
     setup_complete({"Message": "sunfish is ready"})
 
     board = chess.Board(START_FEN)
-    moves = []  # UCI move strings, fed back via `position ... moves ...`
-    fired_at_fifty = False
+    moves = []  # UCI move strings, replayed via `position fen <start> moves ...`
 
     try:
-        for _ply in range(MAX_PLIES):
+        while True:
             if print_fen_enabled():
                 print(board.fen(), flush=True)
-            mv = engine.bestmove(START_FEN, moves)
 
-            if mv == "(none)":
-                # Engine reports no move available. At a fifty-move position this
-                # would count as treating the game as over; otherwise it is a
-                # stalemate/terminal in this sparse endgame.
-                sometimes(
-                    "game drawn after 50 moves with no capture or pawn move",
-                    board.is_fifty_moves(),
-                    {"plies": len(moves), "halfmove_clock": board.halfmove_clock,
-                     "fen": board.fen(), "signal": "bestmove (none)"},
-                )
-                break
-
-            try:
-                move = chess.Move.from_uci(mv)
-            except ValueError:
-                always("engine emits a parseable UCI move", False, {"move": mv})
-                break
-
-            if move not in board.legal_moves:
-                # Sunfish is a king-capture engine and does not fully enforce
-                # check; if it ever returns a move the oracle rejects, stop and
-                # record it rather than desync the oracle.
-                always("engine move is legal per the rules oracle", False,
-                       {"move": mv, "fen": board.fen(), "plies": len(moves)})
-                break
-
-            board.push(move)
-            moves.append(mv)
-
-            if board.is_fifty_moves():
-                reachable(
-                    "reached a fifty-move position (100 plies, no capture/pawn move)",
-                    {"plies": len(moves), "halfmove_clock": board.halfmove_clock,
-                     "fen": board.fen()},
-                )
-                # The engine should now treat this position as a draw. We probe
-                # it: a draw-aware engine returns no move ("(none)") because the
-                # game is over. Sunfish instead keeps returning a winning move,
-                # so this condition stays false and the bug is exposed.
+            legal = list(board.legal_moves)
+            if not legal:
+                print(f"[workload] no legal moves at ply {len(moves)}: "
+                      f"{board.result()} ({board.fen()})", flush=True)
                 probe = engine.bestmove(START_FEN, moves)
-                engine_declares_draw = probe == "(none)"
-                sometimes(
-                    "game drawn after 50 moves with no capture or pawn move",
-                    engine_declares_draw,
+                always(
+                    probe == "(none)",
+                    "game ends when there are no legal moves",
                     {"plies": len(moves), "halfmove_clock": board.halfmove_clock,
                      "fen": board.fen(), "engine_response": probe},
                 )
-                fired_at_fifty = True
                 break
 
-        if not fired_at_fifty:
-            # We never reached the fifty-move threshold within MAX_PLIES; record
-            # that the meaningful state was not observed this run.
-            print(f"[workload] did not reach fifty-move threshold in {len(moves)} "
-                  f"plies (halfmove_clock={board.halfmove_clock})", flush=True)
+            pool = []
+            for m in legal:
+                pool += [m] * (CLOCK_ADVANCE_WEIGHT if advances_halfmove_clock(board, m) else 1)
+            move = random_choice(pool)
+            board.push(move)
+            moves.append(move.uci())
+            
+            if board.is_fifty_moves():
+                print(f"[workload] 50-move draw at ply {len(moves)}: "
+                      f"{board.result()} ({board.fen()})",
+                      f"halfmove_clock {board.halfmove_clock}", flush=True)
+                probe = engine.bestmove(START_FEN, moves)
+                if probe != "(none)":
+                    print(f"[workload] sunfish failed to detect 50-move draw {probe}")
+                always(
+                    probe == "(none)",
+                    "game drawn after 50 moves with no capture or pawn move",
+                    {"plies": len(moves), "halfmove_clock": board.halfmove_clock,
+                     "fen": board.fen(), "engine_response": probe},
+                )
+                break
+
+            if board.is_game_over():
+                print(f"[workload] game over at ply {len(moves)}: "
+                      f"{board.result()} ({board.fen()})", flush=True)
+                break
     finally:
         engine.quit()
 
 
 if __name__ == "__main__":
-    main()
+    print(f"[workload] clock_advance_weight: {CLOCK_ADVANCE_WEIGHT}")
+    game = 1
+    while True:
+        print(f"[workload] starting game {game}")
+        main()
