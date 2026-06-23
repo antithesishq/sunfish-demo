@@ -19,21 +19,8 @@ import sys
 
 import chess
 
-try:
-    from antithesis.assertions import always, reachable, sometimes
-except ImportError:  # pragma: no cover - shim for pre-setup local runs
-    def _shim(name):
-        def _fn(message, condition=True, details=None):
-            status = "PASS" if condition else "fail"
-            print(f"[antithesis:{name}:{status}] {message} {details or {}}",
-                  flush=True)
-        return _fn
-
-    always = _shim("always")
-    sometimes = _shim("sometimes")
-
-    def reachable(message, details=None):  # signature differs from always/sometimes
-        print(f"[antithesis:reachable] {message} {details or {}}", flush=True)
+from antithesis.assertions import always, reachable, sometimes
+from antithesis.lifecycle import setup_complete
 
 # -----------------------------------------------------------------------------
 
@@ -53,6 +40,30 @@ GO_DEPTH = 3
 # Play well past the 100-ply (fifty full-move) threshold to give the engine
 # repeated opportunities to declare the draw.
 MAX_PLIES = 140
+
+# When enabled, print the current board FEN at the top of each move loop
+# iteration. Handy for watching the game / the halfmove clock climb; off by
+# default to keep output clean.
+#
+# The default comes from the PRINT_FEN env var (baked into the image), but it
+# can be toggled live by writing a flag file — useful from the Multiverse
+# Debugger's bash shell, where the running process's environment can't be
+# changed:
+#   echo 1 > /tmp/print_fen   # enable from the next ply onward
+#   echo 0 > /tmp/print_fen   # (or rm the file) back to the env default
+PRINT_FEN_DEFAULT = os.environ.get("PRINT_FEN", "").lower() not in ("", "0", "false")
+PRINT_FEN_FILE = os.environ.get("PRINT_FEN_FILE", "/tmp/print_fen")
+
+
+def print_fen_enabled():
+    """Re-evaluated each loop so the flag file can toggle FEN logging live."""
+    if not os.path.exists(PRINT_FEN_FILE):
+        return PRINT_FEN_DEFAULT
+    try:
+        with open(PRINT_FEN_FILE) as f:
+            return f.read().strip().lower() not in ("", "0", "false")
+    except OSError:
+        return PRINT_FEN_DEFAULT
 
 
 class Engine:
@@ -114,6 +125,7 @@ class Engine:
 def main():
     engine = Engine()
     engine.handshake()
+    setup_complete({"Message": "sunfish is ready"})
 
     board = chess.Board(START_FEN)
     moves = []  # UCI move strings, fed back via `position ... moves ...`
@@ -121,6 +133,8 @@ def main():
 
     try:
         for _ply in range(MAX_PLIES):
+            if print_fen_enabled():
+                print(board.fen(), flush=True)
             mv = engine.bestmove(START_FEN, moves)
 
             if mv == "(none)":

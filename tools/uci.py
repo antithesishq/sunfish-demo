@@ -38,7 +38,10 @@ def go_loop(searcher, hist, stop_event, max_movetime=0, max_depth=0, debug=False
         # before we get to the next one
         if depth - 1 >= max_depth:
             break
-        elapsed = time.time() - start
+        # Guard against a zero elapsed time: a shallow search can complete
+        # within the clock's resolution, which would make the nps division blow
+        # up with ZeroDivisionError.
+        elapsed = max((time.time() - start), 1e-9)
         fields = {
             "depth": depth,
             "time": round(1000 * elapsed),

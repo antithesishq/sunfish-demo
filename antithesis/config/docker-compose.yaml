@@ -3,3 +3,5 @@ services:
     container_name: sunfish
     image: ${REPOSITORY}sunfish:latest
     stdin_open: true
+    environment:
+      PRINT_FEN: "0"

@@ -13,4 +13,5 @@ COPY antithesis/workload/main.py main.py
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
+ENV PRINT_FEN=0
 CMD ["python3", "-u", "main.py"]
