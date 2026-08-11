@@ -1,3 +1,4 @@
 chess==1.9.4
 tqdm==4.57.0
 antithesis
+Pillow==12.3.0
